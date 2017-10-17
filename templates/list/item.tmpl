@@ -1,0 +1,18 @@
+<style type="text/css">
+	li {
+		margin: 0;
+	}
+</style>
+
+<script>
+	console.log("hello");
+</script>
+
+<template>
+	{{define "local"}}<p>another local template</p>{{end}}
+	<li>
+		{{.}}
+		{{template "local"}}
+		{{template "../misc"}}
+	</li>
+</template>

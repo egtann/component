@@ -1,0 +1,10 @@
+<template>
+	{{define "local2"}}<p>local template 2</p>{{end}}
+	<p>my list</p>
+	<ul>
+		{{range $i, $el := . -}}
+			{{- template "./list/item" $el -}}
+		{{end}}
+	{{template "local2" .}}
+	</ul>
+</template>
