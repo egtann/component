@@ -19,6 +19,7 @@
 package component
 
 import (
+	"fmt"
 	"html/template"
 	"io"
 	"os"
@@ -88,6 +89,9 @@ func CompileDir(
 	dependencies := map[string]map[string]bool{}
 	allNames := map[string]bool{}
 	err := filepath.Walk(dirname, func(fpath string, info os.FileInfo, err error) error {
+		if info == nil {
+			return fmt.Errorf("%s does not exist", fpath)
+		}
 		if info.IsDir() || !strings.HasSuffix(fpath, ".tmpl") {
 			return nil
 		}
