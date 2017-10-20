@@ -32,9 +32,6 @@ import (
 	"golang.org/x/net/html"
 )
 
-const Prefix = `<html>
-<head>`
-
 // CompileDir recursively walks the given directory to compile component
 // templates, which are identified by the ".tmpl" extension.
 //
@@ -154,37 +151,31 @@ func CompileDir(
 		for chk := range deps {
 			expandDependencies(name, chk, dependencies)
 		}
-		style := ""
-		script := ""
-		body := ""
+		parts := map[string][]string{}
 		if allNames[name+"-style"] {
-			style += `{{template "` + name + `-style" . }}`
+			parts["style"] = append(parts["style"], `{{template "`+name+`-style" . }}`)
 		}
 		if allNames[name+"-script"] {
-			script += `{{template "` + name + `-script" . }}`
+			parts["script"] = append(parts["script"], `{{template "`+name+`-script" . }}`)
 		}
-		if allNames[name+"-template"] {
-			body = `{{template "` + name + `-template" .}}`
+		if ok, exists := allNames[name+"-template"]; ok && exists {
+			parts["template"] = append(parts["template"], `{{template "`+name+`-template" .}}`)
 		}
-
 		depList := []string{}
 		for dep := range deps {
 			depList = append(depList, dep)
 			if allNames[dep+"-style"] {
-				style += `{{template "` + dep + `-style" . }}`
+				parts["style"] = append(parts["style"], `{{template "`+dep+`-style" .}}`)
 			}
 			if allNames[dep+"-script"] {
-				script += `{{template "` + dep + `-script" .}}`
+				parts["script"] = append(parts["script"], `{{template "`+dep+`-script" .}}`)
 			}
 		}
-
-		html := Prefix + `
-<style>` + style + `</style>
-<script>` + script + `</script>
-</head>
-<body>` + body + `</body>
-</html>
-`
+		html := "<html>\n" +
+			"<style>\n" + strings.Join(parts["style"], "\n") + "\n</style>\n" +
+			"<script>\n" + strings.Join(parts["script"], "\n") + "\n</script>\n" +
+			strings.Join(parts["template"], "\n") + "\n" +
+			"</html>"
 		t := template.Must(template.New(name).Funcs(fns).Parse(html))
 		all.AddParseTree(name, t.Tree)
 	}
@@ -203,7 +194,11 @@ func expandDependencies(name, chk string, dependencies map[string]map[string]boo
 func splitTemplate(r io.Reader) (map[string][]byte, error) {
 	z := html.NewTokenizer(r)
 	cur := ""
-	sections := map[string][]byte{"script": nil, "style": nil, "template": nil}
+	sections := map[string][]byte{
+		"script":   nil,
+		"style":    nil,
+		"template": nil,
+	}
 	depth := 0
 	for t := z.Next(); t != html.ErrorToken; t = z.Next() {
 		tn, _ := z.TagName()
@@ -246,6 +241,7 @@ func checkListNode(ln *parse.ListNode, deps map[*parse.TemplateNode]string) {
 		checkNode(n, deps)
 	}
 }
+
 func checkPipeNode(pn *parse.PipeNode, deps map[*parse.TemplateNode]string) {
 	if pn == nil || len(pn.Cmds) == 0 {
 		return
@@ -254,6 +250,7 @@ func checkPipeNode(pn *parse.PipeNode, deps map[*parse.TemplateNode]string) {
 		checkCommandNode(cn, deps)
 	}
 }
+
 func checkCommandNode(cn *parse.CommandNode, deps map[*parse.TemplateNode]string) {
 	if cn == nil || len(cn.Args) == 0 {
 		return
@@ -285,6 +282,10 @@ func checkNode(n parse.Node, deps map[*parse.TemplateNode]string) {
 		checkListNode(t.List, deps)
 		checkListNode(t.ElseList, deps)
 	case *parse.WithNode:
+		checkPipeNode(t.Pipe, deps)
+		checkListNode(t.List, deps)
+		checkListNode(t.ElseList, deps)
+	case *parse.IfNode:
 		checkPipeNode(t.Pipe, deps)
 		checkListNode(t.List, deps)
 		checkListNode(t.ElseList, deps)
