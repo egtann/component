@@ -32,6 +32,9 @@ import (
 	"golang.org/x/net/html"
 )
 
+const Prefix = `<html>
+<head>`
+
 // CompileDir recursively walks the given directory to compile component
 // templates, which are identified by the ".tmpl" extension.
 //
@@ -107,6 +110,7 @@ func CompileDir(
 		}
 		sectionData, err := splitTemplate(f)
 		if err != nil {
+			f.Close()
 			return errors.Wrap(err, "split template")
 		}
 		deps := map[string]bool{}
@@ -140,6 +144,7 @@ func CompileDir(
 			}
 		}
 		dependencies[name] = deps
+		f.Close()
 		return nil
 	})
 	if err != nil {
@@ -173,8 +178,7 @@ func CompileDir(
 			}
 		}
 
-		html := `<html>
-<head>
+		html := Prefix + `
 <style>` + style + `</style>
 <script>` + script + `</script>
 </head>
