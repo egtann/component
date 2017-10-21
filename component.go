@@ -19,12 +19,15 @@
 package component
 
 import (
+	"bytes"
 	"fmt"
 	"html/template"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template/parse"
 
@@ -100,44 +103,25 @@ func CompileDir(
 			return errors.Wrap(err, "filepath rel")
 		}
 		rel = strings.Replace(rel, string(os.PathSeparator), "/", -1)
-		name := "./" + strings.TrimSuffix(rel, ".tmpl")
+		name := strings.TrimSuffix(rel, ".tmpl")
+		rel = path.Dir(rel)
 		f, err := os.Open(fpath)
 		if err != nil {
 			return errors.Wrap(err, "open file")
 		}
-		sectionData, err := splitTemplate(f)
+		sectionData, scopedStyle, err := splitTemplate(f)
 		if err != nil {
 			f.Close()
-			return errors.Wrap(err, "split template")
+			return err
 		}
 		deps := map[string]bool{}
-		for k, v := range sectionData {
-			if len(v) == 0 {
+		for section, data := range sectionData {
+			if len(data) == 0 {
 				continue
 			}
-			t := template.Must(template.New(name + "-" + k).Funcs(fns).Parse(string(v)))
-			allNames[name+"-"+k] = true
-			for tn, dep := range getDependencies(t) {
-				var depName string
-				if dep[0] == '.' {
-					depName = path.Clean(path.Join(path.Dir(rel), dep))
-					depName = "./" + depName
-					if k == "template" {
-						deps[depName] = true
-					}
-					depName = depName + "-" + k
-					allNames[depName] = true
-				} else {
-					depName = name + "__" + dep
-				}
-				tn.Name = depName
-			}
+			t := compileSection(name, section, string(data), rel, deps, allNames, scopedStyle, fns)
 			for _, tt := range t.Templates() {
-				depName := tt.Name()
-				if depName[0] != '.' {
-					depName = name + "__" + depName
-				}
-				all.AddParseTree(depName, tt.Tree)
+				all.AddParseTree(tt.Tree.Name, tt.Tree)
 			}
 		}
 		dependencies[name] = deps
@@ -147,39 +131,139 @@ func CompileDir(
 	if err != nil {
 		return nil, errors.Wrap(err, "walk directory")
 	}
-	for name, deps := range dependencies {
-		for chk := range deps {
-			expandDependencies(name, chk, dependencies)
+	for name := range dependencies {
+		deps := sortedDeps(name, dependencies)
+		t := compileRoot(name, deps, allNames, fns)
+		for _, tt := range t.Templates() {
+			all.AddParseTree(tt.Tree.Name, tt.Tree)
 		}
-		parts := map[string][]string{}
-		if allNames[name+"-style"] {
-			parts["style"] = append(parts["style"], `{{template "`+name+`-style" . }}`)
-		}
-		if allNames[name+"-script"] {
-			parts["script"] = append(parts["script"], `{{template "`+name+`-script" . }}`)
-		}
-		if ok, exists := allNames[name+"-template"]; ok && exists {
-			parts["template"] = append(parts["template"], `{{template "`+name+`-template" .}}`)
-		}
-		depList := []string{}
-		for dep := range deps {
-			depList = append(depList, dep)
-			if allNames[dep+"-style"] {
-				parts["style"] = append(parts["style"], `{{template "`+dep+`-style" .}}`)
-			}
-			if allNames[dep+"-script"] {
-				parts["script"] = append(parts["script"], `{{template "`+dep+`-script" .}}`)
-			}
-		}
-		html := "<html>\n" +
-			"<style>\n" + strings.Join(parts["style"], "\n") + "\n</style>\n" +
-			"<script>\n" + strings.Join(parts["script"], "\n") + "\n</script>\n" +
-			strings.Join(parts["template"], "\n") + "\n" +
-			"</html>"
-		t := template.Must(template.New(name).Funcs(fns).Parse(html))
-		all.AddParseTree(name, t.Tree)
 	}
 	return all, nil
+}
+
+func compileSection(name, section, data, dir string, deps, all map[string]bool, scopedStyle bool, fns template.FuncMap) *template.Template {
+	finalName := name + "#" + section
+	all[finalName] = true
+	t := template.Must(template.New(".<section>.").Funcs(fns).Parse(data))
+	tns := getTemplateNodes(t)
+	for templateNode, refName := range tns.template {
+		if refName[0] == '.' {
+			// external reference
+			// determine absolute "path"
+			refName = path.Clean(path.Join(dir, refName))
+			if section == "template" {
+				// if this reference is in the "template" section we'll need to
+				// include the references "style" and "script" sections as well
+				// so track this reference as a dependency
+				deps[refName] = true
+			}
+			refName = refName + "#" + section
+			// record the full refName so we can check later what section
+			// templates were actually defined
+			all[refName] = true
+		} else {
+			// local reference
+			refName = name + "~" + refName
+		}
+		// rename the *parse.TemplateNode to point to the canonical name
+		templateNode.Name = refName
+	}
+	for _, tt := range t.Templates() {
+		tmplName := tt.Name()
+		if tmplName == ".<section>." {
+			// we used '.<section>.' as the name when compiling so it wasn't
+			// considered a local template. rename it here.
+			tt.Tree.Name = finalName
+		} else {
+			tt.Tree.Name = name + "~" + tmplName
+		}
+	}
+	return t
+}
+
+func compileRoot(name string, deps []string, all map[string]bool, fns template.FuncMap) *template.Template {
+	parts := map[string][]string{"style": nil, "script": nil, "template": nil}
+	// check if a given template/section is available
+	chk := func(name, section string) {
+		if all[name+"#"+section] {
+			parts[section] = append(parts[section], `{{template "`+name+"#"+section+`" .}}`)
+		}
+	}
+	for _, dep := range deps {
+		chk(dep, "style")
+		chk(dep, "script")
+		if dep == name {
+			chk(name, "template")
+		}
+	}
+	if name == "./overview" {
+		log.Println(parts["template"])
+	}
+	html := "<html>\n" +
+		"<style>\n" + strings.Join(parts["style"], "\n") + "\n</style>\n" +
+		"<script>\n" + strings.Join(parts["script"], "\n") + "\n</script>\n" +
+		strings.Join(parts["template"], "\n") + "\n" +
+		"</html>\n"
+	return template.Must(template.New(name).Funcs(fns).Parse(html))
+}
+
+// kahn algo
+func sortedDeps(name string, deps map[string]map[string]bool) []string {
+	reversed, leaves := reverseDeps(name, deps)
+	sorted := []string{}
+	for len(leaves) > 0 {
+		curr := leaves[0]
+		leaves = leaves[1:]
+		sorted = append(sorted, curr)
+		idx := len(leaves)
+		for dep := range reversed[curr] {
+			add := true
+			for n, m := range reversed {
+				if n != curr && m[dep] {
+					// edges remain
+					add = false
+					break
+				}
+			}
+			if add {
+				leaves = append(leaves, dep)
+			}
+		}
+		delete(reversed, curr)
+		if len(leaves) != idx {
+			sort.Strings(leaves[idx:])
+		}
+	}
+	if len(reversed) > 0 {
+		panic("cycles")
+	}
+	return sorted
+}
+
+func reverseDeps(name string, deps map[string]map[string]bool) (map[string]map[string]bool, []string) {
+	reversed := map[string]map[string]bool{}
+	parents := []string{name}
+	processed := map[string]bool{}
+	leaves := []string{}
+	var parent string
+	for len(parents) > 0 {
+		parent, parents = parents[0], parents[1:]
+		processed[parent] = true
+		if len(deps[parent]) == 0 {
+			leaves = append(leaves, parent)
+		}
+		for dep := range deps[parent] {
+			if _, ok := reversed[dep]; !ok {
+				reversed[dep] = map[string]bool{}
+			}
+			reversed[dep][parent] = true
+			if !processed[dep] {
+				parents = append(parents, dep)
+			}
+		}
+	}
+	sort.Strings(leaves)
+	return reversed, leaves
 }
 
 func expandDependencies(name, chk string, dependencies map[string]map[string]bool) {
@@ -191,19 +275,30 @@ func expandDependencies(name, chk string, dependencies map[string]map[string]boo
 	}
 }
 
-func splitTemplate(r io.Reader) (map[string][]byte, error) {
+func splitTemplate(r io.Reader) (map[string][]byte, bool, error) {
 	z := html.NewTokenizer(r)
 	cur := ""
-	sections := map[string][]byte{
-		"script":   nil,
-		"style":    nil,
-		"template": nil,
-	}
+	sections := map[string][]byte{"script": nil, "style": nil, "template": nil}
 	depth := 0
+	scopedStyle := false
 	for t := z.Next(); t != html.ErrorToken; t = z.Next() {
 		tn, _ := z.TagName()
 		if _, ok := sections[string(tn)]; ok {
 			if t == html.StartTagToken {
+				if string(tn) == "style" {
+					k, _, a := z.TagAttr()
+					for {
+						if string(k) == "scoped" {
+							scopedStyle = true
+							break
+						}
+						if !a {
+							break
+						}
+						k, _, a = z.TagAttr()
+					}
+				}
+
 				depth++
 				if depth == 1 {
 					cur = string(tn)
@@ -222,82 +317,100 @@ func splitTemplate(r io.Reader) (map[string][]byte, error) {
 		}
 	}
 	if err := z.Err(); err != io.EOF {
-		return nil, err
+		return nil, false, err
 	}
-	return sections, nil
+	for s, d := range sections {
+		d = bytes.Trim(d, "\n")
+		diff := len(d) - len(bytes.TrimLeft(d, " \t"))
+		if diff > 0 {
+			pfx := d[:diff]
+			lines := bytes.Split(d, []byte{'\n'})
+			for i, line := range lines {
+				lines[i] = bytes.TrimPrefix(line, pfx)
+			}
+			d = bytes.Join(lines, []byte{'\n'})
+		}
+		sections[s] = d
+	}
+	return sections, scopedStyle, nil
 }
 
-func getDependencies(t *template.Template) map[*parse.TemplateNode]string {
-	deps := map[*parse.TemplateNode]string{}
-	checkListNode(t.Tree.Root, deps)
-	return deps
+func getTemplateNodes(t *template.Template) *tnodes {
+	tns := &tnodes{template: map[*parse.TemplateNode]string{}}
+	tns.checkListNode(t.Tree.Root)
+	return tns
 }
 
-func checkListNode(ln *parse.ListNode, deps map[*parse.TemplateNode]string) {
+type tnodes struct {
+	template map[*parse.TemplateNode]string
+	text     []*parse.TextNode
+}
+
+func (tns *tnodes) checkListNode(ln *parse.ListNode) {
 	if ln == nil || len(ln.Nodes) == 0 {
 		return
 	}
 	for _, n := range ln.Nodes {
-		checkNode(n, deps)
+		tns.checkNode(n)
 	}
 }
-
-func checkPipeNode(pn *parse.PipeNode, deps map[*parse.TemplateNode]string) {
+func (tns *tnodes) checkPipeNode(pn *parse.PipeNode) {
 	if pn == nil || len(pn.Cmds) == 0 {
 		return
 	}
 	for _, cn := range pn.Cmds {
-		checkCommandNode(cn, deps)
+		tns.checkCommandNode(cn)
 	}
 }
-
-func checkCommandNode(cn *parse.CommandNode, deps map[*parse.TemplateNode]string) {
+func (tns *tnodes) checkCommandNode(cn *parse.CommandNode) {
 	if cn == nil || len(cn.Args) == 0 {
 		return
 	}
 	for _, n := range cn.Args {
-		checkNode(n, deps)
+		tns.checkNode(n)
 	}
 }
 
-func checkNodeSlice(nodes []parse.Node, deps map[*parse.TemplateNode]string) {
+func (tns *tnodes) checkNodeSlice(nodes []parse.Node) {
 	if len(nodes) == 0 {
 		return
 	}
 	for _, n := range nodes {
-		checkNode(n, deps)
+		tns.checkNode(n)
 	}
 }
 
-func checkNode(n parse.Node, deps map[*parse.TemplateNode]string) {
+func (tns *tnodes) checkNode(n parse.Node) {
 	switch t := n.(type) {
 	case *parse.ActionNode:
-		checkPipeNode(t.Pipe, deps)
+		tns.checkPipeNode(t.Pipe)
 	case *parse.BranchNode:
-		checkPipeNode(t.Pipe, deps)
-		checkListNode(t.List, deps)
-		checkListNode(t.ElseList, deps)
+		tns.checkPipeNode(t.Pipe)
+		tns.checkListNode(t.List)
+		tns.checkListNode(t.ElseList)
 	case *parse.RangeNode:
-		checkPipeNode(t.Pipe, deps)
-		checkListNode(t.List, deps)
-		checkListNode(t.ElseList, deps)
+		tns.checkPipeNode(t.Pipe)
+		tns.checkListNode(t.List)
+		tns.checkListNode(t.ElseList)
 	case *parse.WithNode:
-		checkPipeNode(t.Pipe, deps)
-		checkListNode(t.List, deps)
-		checkListNode(t.ElseList, deps)
+		tns.checkPipeNode(t.Pipe)
+		tns.checkListNode(t.List)
+		tns.checkListNode(t.ElseList)
 	case *parse.IfNode:
-		checkPipeNode(t.Pipe, deps)
-		checkListNode(t.List, deps)
-		checkListNode(t.ElseList, deps)
+		tns.checkPipeNode(t.Pipe)
+		tns.checkListNode(t.List)
+		tns.checkListNode(t.ElseList)
 	case *parse.ChainNode:
-		checkNode(t.Node, deps)
+		tns.checkNode(t.Node)
 	case *parse.CommandNode:
-		checkCommandNode(t, deps)
+		tns.checkCommandNode(t)
 	case *parse.ListNode:
-		checkListNode(t, deps)
+		tns.checkListNode(t)
 	case *parse.PipeNode:
-		checkPipeNode(t, deps)
+		tns.checkPipeNode(t)
 	case *parse.TemplateNode:
-		deps[t] = t.Name
+		tns.template[t] = t.Name
+	case *parse.TextNode:
+		tns.text = append(tns.text, t)
 	}
 }
