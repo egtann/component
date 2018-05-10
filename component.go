@@ -199,7 +199,8 @@ func compileRoot(name string, deps []string, all map[string]bool, fns template.F
 	if name == "./overview" {
 		log.Println(parts["template"])
 	}
-	html := "<html>\n" +
+	html := "<!DOCTYPE html>\n" +
+		"<html>\n" +
 		"<style>\n" + strings.Join(parts["style"], "\n") + "\n</style>\n" +
 		"<script>\n" + strings.Join(parts["script"], "\n") + "\n</script>\n" +
 		strings.Join(parts["template"], "\n") + "\n" +
