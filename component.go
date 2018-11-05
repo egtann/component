@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -141,7 +140,12 @@ func CompileDir(
 	return all, nil
 }
 
-func compileSection(name, section, data, dir string, deps, all map[string]bool, scopedStyle bool, fns template.FuncMap) *template.Template {
+func compileSection(
+	name, section, data, dir string,
+	deps, all map[string]bool,
+	scopedStyle bool,
+	fns template.FuncMap,
+) *template.Template {
 	finalName := name + "#" + section
 	all[finalName] = true
 	t := template.Must(template.New(".<section>.").Funcs(fns).Parse(data))
@@ -181,7 +185,12 @@ func compileSection(name, section, data, dir string, deps, all map[string]bool, 
 	return t
 }
 
-func compileRoot(name string, deps []string, all map[string]bool, fns template.FuncMap) *template.Template {
+func compileRoot(
+	name string,
+	deps []string,
+	all map[string]bool,
+	fns template.FuncMap,
+) *template.Template {
 	parts := map[string][]string{"style": nil, "script": nil, "template": nil}
 	// check if a given template/section is available
 	chk := func(name, section string) {
@@ -195,9 +204,6 @@ func compileRoot(name string, deps []string, all map[string]bool, fns template.F
 		if dep == name {
 			chk(name, "template")
 		}
-	}
-	if name == "./overview" {
-		log.Println(parts["template"])
 	}
 	html := "<!DOCTYPE html>\n" +
 		"<html>\n" +
@@ -241,7 +247,10 @@ func sortedDeps(name string, deps map[string]map[string]bool) []string {
 	return sorted
 }
 
-func reverseDeps(name string, deps map[string]map[string]bool) (map[string]map[string]bool, []string) {
+func reverseDeps(
+	name string,
+	deps map[string]map[string]bool,
+) (map[string]map[string]bool, []string) {
 	reversed := map[string]map[string]bool{}
 	parents := []string{name}
 	processed := map[string]bool{}
@@ -267,7 +276,10 @@ func reverseDeps(name string, deps map[string]map[string]bool) (map[string]map[s
 	return reversed, leaves
 }
 
-func expandDependencies(name, chk string, dependencies map[string]map[string]bool) {
+func expandDependencies(
+	name, chk string,
+	dependencies map[string]map[string]bool,
+) {
 	for dep := range dependencies[chk] {
 		if _, ok := dependencies[name][dep]; !ok {
 			dependencies[name][dep] = true
