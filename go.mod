@@ -1,6 +1,8 @@
-module "github.com/egtann/component"
+module egt.run/component
+
+go 1.14
 
 require (
-	"github.com/pkg/errors" v0.8.0
-	"golang.org/x/net" v0.0.0-20180218175443-cbe0f9307d01
+	github.com/pkg/errors v0.9.1
+	golang.org/x/net v0.0.0-20200324143707-d3edc9973b7e
 )
